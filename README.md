@@ -29,48 +29,50 @@ The pipeline consists of:
 ├── stage2_survival_model.py
 ├── .gitignore
 └── README.md
+```
 
-Stage 1
+## Stage 1
 
-stage1_multitask_model.py implements the imaging representation learning pipeline.
+`stage1_multitask_model.py` implements the imaging representation learning pipeline.
 
 Paired volumetric inputs are processed using a shared-weight 3D Swin Transformer. Bidirectional cross-attention is used for feature interaction, followed by subtraction-guided feature integration and multi-task prediction.
 
 Cross-validation is performed at the patient level to prevent samples from the same patient from appearing in both training and internal validation subsets.
 
-Stage 2
+## Stage 2
 
-stage2_survival_model.py implements patient-level survival modeling.
+`stage2_survival_model.py` implements patient-level survival modeling.
 
 Imaging representations from multiple instances are aggregated into a patient-level feature vector. Feature preprocessing and selection are fitted exclusively on the training data before DeepSurv modeling.
 
 Held-out datasets are not used for model fitting, feature selection, or preprocessing.
 
-Requirements
+## Requirements
 
 The main dependencies include:
 
-Python
-PyTorch
-torchvision
-timm
-NumPy
-pandas
-scikit-learn
-SciPy
-nibabel
-Data
+- Python
+- PyTorch
+- torchvision
+- timm
+- NumPy
+- pandas
+- scikit-learn
+- SciPy
+- nibabel
+
+## Data
 
 No patient-level data, medical images, labels, model checkpoints, or identifiable information are included in this repository.
 
 Users should configure their own local data paths before running the scripts.
 
-Privacy
+## Privacy
 
 This repository contains source code only.
 
 Clinical data, medical images, patient identifiers, intermediate features, trained model weights, and local configuration files are excluded from version control.
 
-Intended Use
+## Intended Use
 
 The code is provided for research and reproducibility purposes.
