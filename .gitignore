@@ -1,72 +1,186 @@
+# ==============================
 # Python
+# ==============================
+
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.so
 
+# ==============================
 # Virtual environments
+# ==============================
+
 .venv/
 venv/
 env/
+ENV/
 
-# IDE / system
+# ==============================
+# IDE / editor files
+# ==============================
+
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# ==============================
+# Operating system files
+# ==============================
+
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Environment variables and secrets
+# ==============================
+# Environment variables / secrets
+# ==============================
+
 .env
 .env.*
 *.key
 *.pem
+*.secret
+secrets/
+credentials/
 
-# Logs
+# ==============================
+# Project-specific private config
+# ==============================
+
+locked_thresholds.json
+config.local.json
+config_private.json
+local_config.*
+private_config.*
+
+# ==============================
+# Logs / temporary files
+# ==============================
+
 *.log
+logs/
+tmp/
+temp/
+*.tmp
+*.temp
 
-# Research data
+# ==============================
+# Clinical / research data
+# ==============================
+
 data/
 dataset/
 datasets/
-private/
 raw/
+private/
 clinical_data/
+patient_data/
+source_data/
 
-# Tables and spreadsheets
+# ==============================
+# Tables / spreadsheets
+# ==============================
+
 *.csv
 *.tsv
 *.xlsx
 *.xls
+*.xlsm
 
+# ==============================
 # Medical imaging
+# ==============================
+
 *.nii
 *.nii.gz
 *.dcm
 *.dicom
+*.mha
+*.mhd
+*.nrrd
 
+# ==============================
+# Masks / annotations
+# ==============================
+
+masks/
+annotations/
+segmentations/
+roi/
+rois/
+
+# ==============================
 # NumPy / serialized features
+# ==============================
+
 *.npy
 *.npz
 *.pkl
 *.pickle
 *.joblib
 
-# Model weights and checkpoints
+# ==============================
+# Model weights / checkpoints
+# ==============================
+
 *.pt
 *.pth
 *.ckpt
+*.weights
+checkpoints/
+models/
+weights/
 
-# Large model/data formats
+# ==============================
+# Large data / model containers
+# ==============================
+
 *.h5
 *.hdf5
+*.onnx
 
-# Output folders
+# ==============================
+# Outputs / results
+# ==============================
+
 output/
 outputs/
 results/
-checkpoints/
-models/
+predictions/
+evaluation/
+evaluation_results/
+features/
+extracted_features/
 
-# Temporary files
-*.tmp
-*.temp
+# ==============================
+# Figures generated locally
+# ==============================
+
+figures/
+plots/
+
+# ==============================
+# Jupyter
+# ==============================
+
+.ipynb_checkpoints/
+
+# ==============================
+# Cache
+# ==============================
+
+.cache/
+pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ==============================
+# Packaging / build artifacts
+# ==============================
+
+build/
+dist/
+*.egg-info/
