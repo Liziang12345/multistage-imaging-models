@@ -7,6 +7,7 @@ import copy
 import gc
 import hashlib
 import hmac
+import json
 import math
 import os
 import random
@@ -26,6 +27,7 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
     roc_auc_score,
+    roc_curve,
 )
 from sklearn.model_selection import StratifiedGroupKFold
 from torch.amp import GradScaler, autocast
@@ -120,6 +122,8 @@ def canonical_group(x: str) -> str:
         return "validation"
     if s in {"test", "external test", "externaltest", "external"}:
         return "test"
+    if s in {"prospective", "prospective validation", "temporal", "temporal validation"}:
+        return "prospective"
     return s
 
 
@@ -763,7 +767,81 @@ class PlaqueDataset(Dataset):
 
 
 # ==============================================================================
-# 6. Training
+# 6. Training-only threshold locking
+# ==============================================================================
+
+def locked_threshold_path() -> Path:
+    return Path(CONFIG["model_dir"]) / "locked_thresholds.json"
+
+
+def select_youden_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    """Select a binary decision threshold using Youden's J on Training OOF data."""
+    y_true = np.asarray(y_true, dtype=int)
+    y_prob = np.asarray(y_prob, dtype=float)
+
+    if len(np.unique(y_true)) != 2:
+        raise ValueError("Threshold selection requires both binary classes.")
+    if not np.all(np.isfinite(y_prob)):
+        raise ValueError("Threshold selection received non-finite probabilities.")
+
+    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
+    finite = np.isfinite(thresholds)
+    if not np.any(finite):
+        raise RuntimeError("No finite ROC threshold was available.")
+
+    j = tpr - fpr
+    best_j = np.max(j[finite])
+    candidate_idx = np.where(finite & np.isclose(j, best_j, rtol=0.0, atol=1e-12))[0]
+
+    # Deterministic tie-break: choose the candidate closest to 0.5.
+    idx = candidate_idx[np.argmin(np.abs(thresholds[candidate_idx] - 0.5))]
+    return float(np.clip(thresholds[idx], 0.0, 1.0))
+
+
+def save_locked_thresholds(oof_predictions: pd.DataFrame) -> Dict[str, float]:
+    thresholds: Dict[str, float] = {}
+    for task in TASKS:
+        thresholds[task] = select_youden_threshold(
+            oof_predictions[f"true_{task}"].to_numpy(),
+            oof_predictions[f"prob_{task}"].to_numpy(),
+        )
+
+    path = locked_threshold_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "selection_method": "youden_j",
+        "selection_source": "training_oof",
+        "thresholds": thresholds,
+    }
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    return thresholds
+
+
+def load_locked_thresholds() -> Dict[str, float]:
+    path = locked_threshold_path()
+    if not path.is_file():
+        raise FileNotFoundError(
+            "Locked thresholds were not found. Run --mode lock-thresholds first."
+        )
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    thresholds = payload.get("thresholds", {})
+    if set(thresholds) != set(TASKS):
+        raise ValueError("Locked threshold file does not contain all tasks.")
+
+    clean: Dict[str, float] = {}
+    for task in TASKS:
+        value = float(thresholds[task])
+        if not np.isfinite(value) or value < 0.0 or value > 1.0:
+            raise ValueError("Locked thresholds must be finite values in [0, 1].")
+        clean[task] = value
+    return clean
+
+
+# ==============================================================================
+# 7. Training
 # ==============================================================================
 
 def make_loader(
@@ -1014,9 +1092,13 @@ def run_training() -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    # Derive task-specific thresholds exclusively from patient-grouped
+    # Training OOF predictions and save them with the Stage-1 checkpoints.
+    run_threshold_locking()
+
 
 # ==============================================================================
-# 7. Checkpoint loading / evaluation
+# 8. Checkpoint loading / evaluation
 # ==============================================================================
 
 def load_fold_models(device: torch.device) -> List[PlaquePhenNet]:
@@ -1039,6 +1121,62 @@ def load_fold_models(device: torch.device) -> List[PlaquePhenNet]:
         models.append(model)
 
     return models
+
+
+@torch.no_grad()
+def run_threshold_locking() -> None:
+    """Lock task-specific cutoffs from patient-grouped Training OOF predictions."""
+    device = get_device()
+
+    df = pd.read_csv(CONFIG["plaque_csv"])
+    if "group" not in df.columns:
+        raise ValueError("Plaque CSV must contain a 'group' column.")
+
+    groups = df["group"].map(canonical_group)
+    train_df = df[groups == "train"].reset_index(drop=True)
+    if len(train_df) == 0:
+        raise ValueError("No training samples were found.")
+
+    subject_df = pd.read_csv(CONFIG["subject_csv"], dtype={"ID": str})
+    if "ID" not in subject_df.columns:
+        raise ValueError("Subject CSV must contain an 'ID' column.")
+    subject_df["ID"] = subject_df["ID"].astype(str).str.strip()
+
+    plaque_to_subject = build_plaque_patient_map(train_df, subject_df)
+    patient_groups = np.asarray(
+        [plaque_to_subject[clean_plaque_name(x)] for x in train_df["ID"]],
+        dtype=object,
+    )
+
+    splitter = StratifiedGroupKFold(
+        n_splits=CONFIG["n_fold"],
+        shuffle=True,
+        random_state=CONFIG["seed"],
+    )
+    y_strat = train_df["label"].astype(int).to_numpy()
+    models = load_fold_models(device)
+
+    oof_frames: List[pd.DataFrame] = []
+    seen = np.zeros(len(train_df), dtype=np.int8)
+
+    for fold, (_, hold_idx) in enumerate(
+        splitter.split(train_df, y_strat, groups=patient_groups)
+    ):
+        seen[hold_idx] += 1
+        hold_df = train_df.iloc[hold_idx].reset_index(drop=True)
+        hold_loader = make_loader(
+            hold_df, is_train=False, batch_size=CONFIG["batch_size"]
+        )
+        oof_frames.append(predict_ensemble([models[fold]], hold_loader, device))
+
+    if not np.all(seen == 1):
+        raise RuntimeError("Training OOF partitioning did not cover each sample exactly once.")
+
+    oof_predictions = pd.concat(oof_frames, ignore_index=True)
+    if len(oof_predictions) != len(train_df):
+        raise RuntimeError("Training OOF prediction count does not match the training set.")
+
+    save_locked_thresholds(oof_predictions)
 
 
 @torch.no_grad()
@@ -1087,12 +1225,17 @@ def predict_ensemble(
     return pd.DataFrame(rows)
 
 
-def classification_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> Dict[str, float]:
+def classification_metrics(
+    y_true: np.ndarray, y_prob: np.ndarray, threshold: float
+) -> Dict[str, float]:
     y_true = np.asarray(y_true, dtype=int)
     y_prob = np.asarray(y_prob, dtype=float)
-    y_pred = (y_prob >= 0.5).astype(int)
+    threshold = float(threshold)
+    if not np.isfinite(threshold) or threshold < 0.0 or threshold > 1.0:
+        raise ValueError("Threshold must be a finite value in [0, 1].")
+    y_pred = (y_prob >= threshold).astype(int)
 
-    out: Dict[str, float] = {}
+    out: Dict[str, float] = {"Threshold": threshold}
     if len(np.unique(y_true)) >= 2:
         out["AUC"] = float(roc_auc_score(y_true, y_prob))
         out["AP"] = float(average_precision_score(y_true, y_prob))
@@ -1121,12 +1264,14 @@ def run_evaluation() -> None:
     df = pd.read_csv(CONFIG["plaque_csv"])
     groups = df["group"].map(canonical_group)
     models = load_fold_models(device)
+    locked_thresholds = load_locked_thresholds()
 
     all_metric_rows = []
 
     for split_name, split_key in [
         ("Validation", "validation"),
         ("Test", "test"),
+        ("Prospective", "prospective"),
     ]:
         subset = df[groups == split_key].reset_index(drop=True)
         if len(subset) == 0:
@@ -1146,6 +1291,7 @@ def run_evaluation() -> None:
             m = classification_metrics(
                 pred_df[f"true_{task}"].to_numpy(),
                 pred_df[f"prob_{task}"].to_numpy(),
+                threshold=locked_thresholds[task],
             )
             m["Cohort"] = split_name
             m["Task"] = task
@@ -1158,7 +1304,7 @@ def run_evaluation() -> None:
 
 
 # ==============================================================================
-# 8. Feature extraction
+# 9. Feature extraction
 # ==============================================================================
 
 def load_single_case(
@@ -1348,7 +1494,7 @@ def run_feature_extraction() -> None:
 
 
 # ==============================================================================
-# 9. CLI
+# 10. CLI
 # ==============================================================================
 
 def parse_args() -> argparse.Namespace:
@@ -1357,7 +1503,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["train", "evaluate", "extract"],
+        choices=["train", "lock-thresholds", "evaluate", "extract"],
         default="train",
     )
     parser.add_argument("--plaque-csv", type=str, default=CONFIG["plaque_csv"])
@@ -1392,6 +1538,8 @@ def main() -> None:
 
     if args.mode == "train":
         run_training()
+    elif args.mode == "lock-thresholds":
+        run_threshold_locking()
     elif args.mode == "evaluate":
         run_evaluation()
     elif args.mode == "extract":
