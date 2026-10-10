@@ -1,0 +1,16 @@
+# Publish only explicitly reviewed text files from the repository root.
+# All other files and directories are ignored, including datasets, weights,
+# output artifacts, temporary notebooks, caches, credentials, and local notes.
+/*
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/baseline_backbones.py
+!/baseline_resnet50.py
+!/baseline_densenet121.py
+!/baseline_convnextv2_tiny.py
+!/baseline_vit_base_patch16_224.py
+!/stage1_multitask.py
+!/representation.py
+!/models.py
+!/run_survival.py
